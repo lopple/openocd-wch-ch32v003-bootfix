@@ -1,3 +1,16 @@
+/build/
+/dist/
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.exe
+*.dll
+*.bin
+*.hex
+*.elf
+*.log
+
 # stuff "git status" should ignore
 
 # build output
@@ -10,6 +23,12 @@
 *.lo
 *.la
 *.in
+!/jimtcl/Makefile.in
+!/jimtcl/build-jim-ext.in
+!/jimtcl/jimtcl.pc.in
+!/jimtcl/tests/Makefile.in
+!/jimtcl/examples.api/Makefile.in
+/jimtcl/configure.gnu
 
 # generated source files
 src/jtag/minidriver_imp.h

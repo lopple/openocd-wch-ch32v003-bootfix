@@ -1,0 +1,324 @@
+name: Windows release draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: Package version for a dry-run artifact build. Leave empty to use 0.11.0-ci.<run_number>.
+        required: false
+        type: string
+      release_tag:
+        description: Release tag label for metadata in dry-run artifact builds. Leave empty to use ci-<run_number>.
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-x86-release-draft:
+    name: windows-x86 / i686-mingw32 / draft release asset
+    runs-on: windows-latest
+
+    env:
+      BUILD_DIR: build\ci-windows-x86-wchdriver-release
+      INSTALL_DIR: build\ci-install-windows-x86-wchdriver-release
+      DIST_DIR: dist\github-release-windows-x86
+      GIT_REF_NAME: ${{ github.ref_name }}
+      INPUT_PACKAGE_VERSION: ${{ inputs.package_version }}
+      INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Configure Git line endings
+        run: git config --global core.autocrlf input
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Derive release metadata
+        run: |
+          $eventName = $env:GITHUB_EVENT_NAME
+          $refName = $env:GIT_REF_NAME
+          $isTagRelease = ($eventName -eq 'push' -and $env:GITHUB_REF -like 'refs/tags/v*')
+
+          if ($isTagRelease) {
+            $releaseTag = $refName
+            $packageVersion = $releaseTag
+            if ($packageVersion.StartsWith('v')) {
+              $packageVersion = $packageVersion.Substring(1)
+            }
+            $publishRelease = 'true'
+          } else {
+            if ([string]::IsNullOrWhiteSpace($env:INPUT_PACKAGE_VERSION)) {
+              $packageVersion = "0.11.0-ci.$env:GITHUB_RUN_NUMBER"
+            } else {
+              $packageVersion = $env:INPUT_PACKAGE_VERSION
+            }
+
+            if ([string]::IsNullOrWhiteSpace($env:INPUT_RELEASE_TAG)) {
+              $releaseTag = "ci-$env:GITHUB_RUN_NUMBER"
+            } else {
+              $releaseTag = $env:INPUT_RELEASE_TAG
+            }
+            $publishRelease = 'false'
+          }
+
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PACKAGE_VERSION=$packageVersion"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RELEASE_TAG=$releaseTag"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PUBLISH_RELEASE=$publishRelease"
+          Write-Host "package version: $packageVersion"
+          Write-Host "release tag: $releaseTag"
+          Write-Host "publish release: $publishRelease"
+
+      - name: Show source state
+        run: |
+          git rev-parse HEAD
+          git status --short --branch
+
+      - name: Setup MSYS2 MINGW32
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: false
+          cache: false
+          install: >-
+            base-devel
+            git
+            autoconf-wrapper
+            autoconf2.73
+            automake-wrapper
+            automake1.18
+            libtool
+            pkgconf
+            mingw-w64-i686-gcc
+            mingw-w64-i686-pkgconf
+
+      - name: Install pinned i686 runtime and libusb packages
+        run: |
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $bashExe = Join-Path $msys2Root 'usr\bin\bash.exe'
+          $installScript = @'
+          set -euxo pipefail
+          pacman -U --noconfirm \
+            https://repo.msys2.org/mingw/mingw32/mingw-w64-i686-libwinpthread-14.0.0.r92.g818fa6510-1-any.pkg.tar.zst \
+            https://repo.msys2.org/mingw/mingw32/mingw-w64-i686-winpthreads-14.0.0.r92.g818fa6510-1-any.pkg.tar.zst \
+            https://repo.msys2.org/mingw/mingw32/mingw-w64-i686-libusb-1.0.26-1-any.pkg.tar.zst
+          pacman -Q \
+            mingw-w64-i686-libwinpthread \
+            mingw-w64-i686-winpthreads \
+            mingw-w64-i686-libusb \
+            mingw-w64-i686-gcc \
+            mingw-w64-i686-pkgconf
+          '@
+          $bashArgs = @(
+            '-lc',
+            $installScript
+          )
+          & $bashExe @bashArgs
+
+      - name: Build OpenOCD
+        run: |
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $buildArgs = @(
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            'scripts\ci\build-windows-msys2.ps1',
+            '-Msys2Root',
+            $msys2Root,
+            '-MsysEnvironment',
+            'mingw32',
+            '-BuildDir',
+            $env:BUILD_DIR,
+            '-InstallDir',
+            $env:INSTALL_DIR,
+            '-Jobs',
+            '2',
+            '-RunTopLevelBootstrap'
+          )
+          & powershell @buildArgs
+
+      - name: Package release zip
+        run: |
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $sourceRepoUrl = "https://github.com/$env:GITHUB_REPOSITORY"
+          $packageArgs = @(
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            'scripts\ci\package-windows-release.ps1',
+            '-PackageVersion',
+            $env:PACKAGE_VERSION,
+            '-ReleaseTag',
+            $env:RELEASE_TAG,
+            '-InstallDir',
+            $env:INSTALL_DIR,
+            '-DistDir',
+            $env:DIST_DIR,
+            '-ArchiveSuffix',
+            'windows-x86-wchdriver',
+            '-SourceRepoUrl',
+            $sourceRepoUrl,
+            '-Msys2Root',
+            $msys2Root,
+            '-MsysEnvironment',
+            'mingw32'
+          )
+          & powershell @packageArgs
+
+      - name: Verify package sidecar
+        run: |
+          $zip = Get-ChildItem -LiteralPath $env:DIST_DIR -File -Filter '*.zip' | Select-Object -First 1
+          $shaFile = Get-ChildItem -LiteralPath $env:DIST_DIR -File -Filter '*.sha256.txt' | Select-Object -First 1
+          if ($null -eq $zip) {
+            throw 'release zip not found'
+          }
+          if ($null -eq $shaFile) {
+            throw 'release checksum sidecar not found'
+          }
+
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip.FullName).Hash
+          $expectedLine = Get-Content -LiteralPath $shaFile.FullName | Select-Object -First 1
+          $expectedHash = (($expectedLine -split '\s+')[0]).ToUpperInvariant()
+          if ($actualHash -ne $expectedHash) {
+            throw "zip hash mismatch: actual=$actualHash expected=$expectedHash"
+          }
+
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RELEASE_ZIP_NAME=$($zip.Name)"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RELEASE_ZIP_SHA256=$actualHash"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RELEASE_ZIP_SIZE=$($zip.Length)"
+          Write-Host "zip: $($zip.Name)"
+          Write-Host "zip sha256: $actualHash"
+          Write-Host "zip size: $($zip.Length)"
+
+      - name: Upload dry-run artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: openocd-wch-release-windows-x86-wchdriver-${{ github.run_number }}
+          path: |
+            dist/github-release-windows-x86/*.zip
+            dist/github-release-windows-x86/*.sha256.txt
+
+      - name: Create draft prerelease
+        if: env.PUBLISH_RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tagName = $env:RELEASE_TAG
+          $repo = $env:GITHUB_REPOSITORY
+          $zip = Get-ChildItem -LiteralPath $env:DIST_DIR -File -Filter '*.zip' | Select-Object -First 1
+          $shaFile = Get-ChildItem -LiteralPath $env:DIST_DIR -File -Filter '*.sha256.txt' | Select-Object -First 1
+          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          $notesLines = @(
+            "# $tagName",
+            '',
+            'Draft prerelease for Windows x86 / i686-mingw32 / WCH official driver stack.',
+            '',
+            'This draft is not ready for Arduino package index use until the manual hardware release gate is completed against the downloaded release asset.',
+            '',
+            "Source commit: $env:GITHUB_SHA",
+            "Package version: $env:PACKAGE_VERSION",
+            "Archive: $env:RELEASE_ZIP_NAME",
+            "Archive SHA256: $env:RELEASE_ZIP_SHA256",
+            "Archive size: $env:RELEASE_ZIP_SIZE",
+            '',
+            'Scope:',
+            '- windows-x86 / i686-mingw32',
+            '- WCHLinkDLL backend',
+            '- WCH official driver stack required',
+            '- WCHLinkDLL.dll and CH347DLL.dll are not bundled',
+            '- WinUSB/libusbK driver replacement is not supported in this release line',
+            '',
+            'Manual gate before publishing:',
+            '- BOOT readback matches expected image',
+            '- USER flash hash is unchanged before/after BOOT write',
+            '- OpenOCD verify agrees with independent readback',
+            '- Release asset was downloaded and rehashed after upload'
+          )
+          Set-Content -LiteralPath $notesPath -Value $notesLines -Encoding ASCII
+
+          $viewArgs = @(
+            'release',
+            'view',
+            $tagName,
+            '--repo',
+            $repo,
+            '--json',
+            'tagName'
+          )
+          $previousErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          try {
+            & gh @viewArgs *> $null
+            $viewExitCode = $LASTEXITCODE
+          } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+          }
+          if ($viewExitCode -eq 0) {
+            throw "release already exists: $tagName"
+          }
+
+          $createArgs = @(
+            'release',
+            'create',
+            $tagName,
+            $zip.FullName,
+            $shaFile.FullName,
+            '--repo',
+            $repo,
+            '--title',
+            $tagName,
+            '--notes-file',
+            $notesPath,
+            '--draft',
+            '--prerelease',
+            '--verify-tag',
+            '--latest=false'
+          )
+          & gh @createArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "gh release create failed with exit code $LASTEXITCODE"
+          }
+
+          $downloadDir = Join-Path $env:RUNNER_TEMP 'release-download'
+          New-Item -ItemType Directory -Path $downloadDir | Out-Null
+          $downloadArgs = @(
+            'release',
+            'download',
+            $tagName,
+            '--repo',
+            $repo,
+            '--dir',
+            $downloadDir,
+            '--pattern',
+            $zip.Name,
+            '--pattern',
+            $shaFile.Name
+          )
+          & gh @downloadArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "gh release download failed with exit code $LASTEXITCODE"
+          }
+
+          $downloadedZip = Join-Path $downloadDir $zip.Name
+          $downloadedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $downloadedZip).Hash
+          if ($downloadedHash -ne $env:RELEASE_ZIP_SHA256) {
+            throw "downloaded release asset hash mismatch: actual=$downloadedHash expected=$env:RELEASE_ZIP_SHA256"
+          }
+          Write-Host "draft release asset rehash passed: $downloadedHash"

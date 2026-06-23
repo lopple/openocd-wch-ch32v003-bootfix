@@ -1,0 +1,165 @@
+name: Windows x86 artifact
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/windows-x86-artifact.yml
+      - scripts/ci/**
+      - src/**
+      - tcl/**
+      - jimtcl/**
+      - packaging/**
+      - docs/**
+      - COPYING
+      - README.md
+      - Makefile.am
+      - configure.ac
+      - bootstrap
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x86-wchdriver:
+    name: windows-x86 / i686-mingw32 / WCH driver stack
+    runs-on: windows-latest
+
+    env:
+      BUILD_DIR: build\ci-windows-x86-wchdriver
+      INSTALL_DIR: build\ci-install-windows-x86-wchdriver
+      DIST_DIR: dist\github-actions-windows-x86
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Configure Git line endings
+        run: git config --global core.autocrlf input
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Show source state
+        run: |
+          git rev-parse HEAD
+          git status --short --branch
+
+      - name: Setup MSYS2 MINGW32
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: false
+          cache: false
+          install: >-
+            base-devel
+            git
+            autoconf-wrapper
+            autoconf2.73
+            automake-wrapper
+            automake1.18
+            libtool
+            pkgconf
+            mingw-w64-i686-gcc
+            mingw-w64-i686-pkgconf
+
+      - name: Install pinned i686 runtime and libusb packages
+        run: |
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $bashExe = Join-Path $msys2Root 'usr\bin\bash.exe'
+          $installScript = @'
+          set -euxo pipefail
+          pacman -U --noconfirm \
+            https://repo.msys2.org/mingw/mingw32/mingw-w64-i686-libwinpthread-14.0.0.r92.g818fa6510-1-any.pkg.tar.zst \
+            https://repo.msys2.org/mingw/mingw32/mingw-w64-i686-winpthreads-14.0.0.r92.g818fa6510-1-any.pkg.tar.zst \
+            https://repo.msys2.org/mingw/mingw32/mingw-w64-i686-libusb-1.0.26-1-any.pkg.tar.zst
+          pacman -Q \
+            mingw-w64-i686-libwinpthread \
+            mingw-w64-i686-winpthreads \
+            mingw-w64-i686-libusb \
+            mingw-w64-i686-gcc \
+            mingw-w64-i686-pkgconf
+          '@
+          $bashArgs = @(
+            '-lc',
+            $installScript
+          )
+          & $bashExe @bashArgs
+
+      - name: Build OpenOCD
+        run: |
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $buildArgs = @(
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            'scripts\ci\build-windows-msys2.ps1',
+            '-Msys2Root',
+            $msys2Root,
+            '-MsysEnvironment',
+            'mingw32',
+            '-BuildDir',
+            $env:BUILD_DIR,
+            '-InstallDir',
+            $env:INSTALL_DIR,
+            '-Jobs',
+            '2',
+            '-RunTopLevelBootstrap'
+          )
+          & powershell @buildArgs
+
+      - name: Package artifact zip
+        run: |
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $sourceRepoUrl = 'https://github.com/${{ github.repository }}'
+          $packageVersion = '0.11.0-ci.${{ github.run_number }}'
+          $releaseTag = 'ci-${{ github.run_number }}'
+          $packageArgs = @(
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            'scripts\ci\package-windows-release.ps1',
+            '-PackageVersion',
+            $packageVersion,
+            '-ReleaseTag',
+            $releaseTag,
+            '-InstallDir',
+            $env:INSTALL_DIR,
+            '-DistDir',
+            $env:DIST_DIR,
+            '-ArchiveSuffix',
+            'windows-x86-wchdriver',
+            '-SourceRepoUrl',
+            $sourceRepoUrl,
+            '-Msys2Root',
+            $msys2Root,
+            '-MsysEnvironment',
+            'mingw32'
+          )
+          & powershell @packageArgs
+
+      - name: Show artifact files
+        run: |
+          Get-ChildItem -LiteralPath $env:DIST_DIR -File |
+            Sort-Object Name |
+            Select-Object Name,Length,LastWriteTime
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: openocd-wch-windows-x86-wchdriver-${{ github.run_number }}
+          path: |
+            dist/github-actions-windows-x86/*.zip
+            dist/github-actions-windows-x86/*.sha256.txt

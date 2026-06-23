@@ -1,0 +1,40 @@
+OpenOCD WCH CH32V003 BOOT write fix package
+================================================
+
+Package version: <version>
+Source commit: <commit>
+Release tag: <tag>
+
+This Windows package contains a self-built OpenOCD executable from this
+hard-fork source tree. It does not redistribute openwch/openocd_wch/bin/openocd.exe.
+
+Source base:
+
+- OpenOCD, GPL-2.0-or-later
+- WCH OpenOCD source mirror used as the hard-fork base
+- Local CH32V003 BOOT/system flash write fixes in this repository
+
+Bundled runtime files:
+
+- <list bundled runtime DLLs, if any>
+
+Not bundled:
+
+- WCHLinkDLL.dll
+- CH347DLL.dll
+- Other WCH proprietary DLLs whose redistribution terms have not been confirmed
+
+License files:
+
+- COPYING
+- LICENSES/
+- LICENSE-AND-RELEASE-POLICY.md
+
+Build and source metadata:
+
+- SOURCE.txt
+- BUILDINFO.txt
+- SHA256SUMS.txt
+
+For exact source, build options, executable hash, archive hash, and archive size,
+see SOURCE.txt, BUILDINFO.txt, SHA256SUMS.txt, and the GitHub release notes.

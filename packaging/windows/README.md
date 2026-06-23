@@ -133,17 +133,17 @@ Release asset in the public repository:
 
 ```text
 tag: v0.11.0-ch32v003bootfix.2
-source commit: <public-tag-commit>
-workflow run: <public-windows-release-draft-workflow-run>
+source commit: 846f2cf5d057bf257ed5cfe21417983630099dc9
+workflow run: https://github.com/lopple/openocd-wch-ch32v003-bootfix/actions/runs/28009722292
 archiveFileName: openocd-wch-ch32v003-bootfix-0.11.0-ch32v003bootfix.2-windows-x86-wchdriver.zip
 url: https://github.com/lopple/openocd-wch-ch32v003-bootfix/releases/download/v0.11.0-ch32v003bootfix.2/openocd-wch-ch32v003-bootfix-0.11.0-ch32v003bootfix.2-windows-x86-wchdriver.zip
-openocd.exe version: <public-release-build-version>
-openocd.exe SHA256: <openocd-exe-sha256-after-public-release-download>
-zip size: <bytes-after-public-release-download>
-zip SHA256: <sha256-after-public-release-download>
+openocd.exe version: 0.11.0+dev (2026-06-23-07:30)
+openocd.exe SHA256: 36A5926EFC44BC67AB41D46485A93BEA36E3920437715C4493BA424E492D5782
+zip size: 8176825
+zip SHA256: F4D10EE0D8629BA4EBAA2980BB31159825F7C2766D91CCD935CE85472CED835C
 ```
 
-These values are fixed only after building the release asset from the public repository tag with GitHub Actions, publishing it, downloading it again, and confirming that SHA256/size match the sidecar and Gate C record. Only assets that pass targetless smoke testing, release text/import audit, write-plan trap, and hardware BOOT write/readback are distributable. USER flash full/head hashes must match pre/post write, and the BOOT readback prefix must match the input bootloader.
+These values were fixed after building the release asset from the public repository tag with GitHub Actions, publishing it, downloading it again, and confirming that SHA256/size matched the sidecar and Gate C record. Only assets that pass targetless smoke testing, release text/import audit, write-plan trap, and hardware BOOT write/readback are distributable. USER flash full/head hashes must match pre/post write, and the BOOT readback prefix must match the input bootloader.
 
 This release asset includes `NOTICE.txt` and DLL/import audit records. It does not bundle WCH proprietary DLLs.
 

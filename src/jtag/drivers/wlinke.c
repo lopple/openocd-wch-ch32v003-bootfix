@@ -25,7 +25,8 @@
 #include <arpa/inet.h>
 #endif
 #include "cmsis_dap.h"
-#ifdef _WIN32
+
+#ifdef WLINK_USE_CH375_DLL
 #include <windows.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -33,7 +34,6 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdint.h>
-#include "hidapi.h"
 typedef int(__stdcall *pCH375OpenDevice)(unsigned long iIndex);
 typedef void(__stdcall *pCH375CloseDevice)(unsigned long iIndex);
 typedef unsigned long(__stdcall *pCH375SetTimeout)(unsigned long iIndex,
@@ -65,7 +65,9 @@ pCH375WriteEndP pWriteData;
 #include <sys/types.h>
 #include <fcntl.h>
 #include <string.h>
+#ifdef HAVE_SYS_IOCTL_H
 #include <sys/ioctl.h>
+#endif
 #include <stdint.h>
 int gIndex = 0;
 static const uint16_t wlink_vids[] = {0x1a86, 0};
@@ -113,12 +115,37 @@ unsigned long  poutput = -1;
 // bool protectcheck=false;
 unsigned char riscvchip;
 unsigned int chip_type;
+unsigned char wlink_detected_chip;
 unsigned long chipiaddr;
 unsigned long pagesize;
 unsigned long ramaddr;
 bool noloadflag = false;
+bool wlink_write_plan_trap = false;
 extern int writeloop;
 uint8_t sp=1;
+
+#define CH32V003_BOOT_FLASH_BASE 0x1ffff000U
+/* Avoid padded writes into the system identity area around 0x1ffff7e8. */
+#define CH32V003_BOOT_WRITABLE_SIZE 0x00000780U
+#define CH32V003_BOOT_WRITE_ALIGNMENT 64U
+#define WLINK_DEFAULT_WRITE_ALIGNMENT 256U
+
+static bool ch32v003_boot_write_range(uint32_t address)
+{
+	return riscvchip == 0x09
+		&& wlink_detected_chip != 0x49
+		&& address >= CH32V003_BOOT_FLASH_BASE
+		&& address < CH32V003_BOOT_FLASH_BASE + CH32V003_BOOT_WRITABLE_SIZE;
+}
+
+static uint32_t wlink_round_up(uint32_t value, uint32_t alignment)
+{
+	if ((value % alignment) == 0)
+		return value;
+
+	return ((value / alignment) + 1) * alignment;
+}
+
 uint8_t flash_op103[ ] ={
     0x01, 0x11, 0x02, 0xCE, 0x93, 0x77, 0x15, 0x00, 0x99, 0xCF, 0xB7, 0x06, 0x67, 0x45, 0xB7, 0x27, 
     0x02, 0x40, 0x93, 0x86, 0x36, 0x12, 0x37, 0x97, 0xEF, 0xCD, 0xD4, 0xC3, 0x13, 0x07, 0xB7, 0x9A, 
@@ -1569,6 +1596,8 @@ int wlink_ready_write(uint32_t address, uint32_t count)
 	{
 		txbuf[3] = 0x0b;
 	}
+	LOG_INFO("wlink_ready_write: chip=0x%02x input=0x%08x mapped=0x%08lx count=0x%08x cmd=0x%02x pageerase=%d writeloop=%d",
+		riscvchip, address, chipiaddr1, count, txbuf[3], pageerase, writeloop);
 	len = 4;
 	pWriteData(0, 1, txbuf, &len);
 	len = 4;
@@ -1593,7 +1622,7 @@ void wlink_endprogram(void)
 int wlink_fastprogram(uint8_t *buffer, int packsize)
 {
 	unsigned long len = 64;
-	unsigned char rxbuf[4];
+	unsigned char rxbuf[4] = {0};
 	
 	for (int i = 0; i < packsize / 64; i++)
 	{
@@ -1602,11 +1631,16 @@ int wlink_fastprogram(uint8_t *buffer, int packsize)
 		len = 64;
 	}
 	len = 4;
-	if (pReadData(0, 2, rxbuf, &len))
+	bool read_ok = pReadData(0, 2, rxbuf, &len);
+	LOG_INFO("wlink_fastprogram response: read_ok=%d len=%lu packsize=%d"
+		" rx=%02x %02x %02x %02x",
+		read_ok, len, packsize, rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3]);
+	if (read_ok)
 	{
 		if ((rxbuf[3] == 0x02) || (rxbuf[3] == 0x04))
 			return ERROR_OK;
 	}
+	LOG_ERROR("wlink_fastprogram failed: packsize=%d status=0x%02x", packsize, rxbuf[3]);
 	return ERROR_FAIL;
 }
 
@@ -1863,7 +1897,7 @@ void wlink_code_erase(void){
 
 int wlink_quit(void)
 {
-#ifdef _WIN32
+#ifdef WLINK_USE_CH375_DLL
 	if (gOpen)
 	{
 		if(iocontrol!=4)
@@ -1876,7 +1910,7 @@ int wlink_quit(void)
 		FreeLibrary(hModule);
 		hModule = 0;
 	}
-#else if
+#else
 	if(iocontrol!=4)
 		wlink_endprocess();
 	jtag_libusb_close(wfd);
@@ -1897,7 +1931,7 @@ int wlink_init(void)
 	txbuf[1] = 0x0d;
 	txbuf[2] = 0x01;
 	txbuf[3] = 0x01;
-#ifdef _WIN32
+#ifdef WLINK_USE_CH375_DLL
 	OSVERSIONINFO version;
 
 	version.dwOSVersionInfoSize = sizeof version;
@@ -1914,28 +1948,30 @@ int wlink_init(void)
 	if (hModule == 0)
 	{
 		hModule = LoadLibrary("WCHLinkDll.dll");
-		if (hModule)
+		if (!hModule)
 		{
-			pOpenDev = (pCH375OpenDevice)GetProcAddress(hModule, "CH375OpenDevice");
-			pCloseDev = (pCH375CloseDevice)GetProcAddress(hModule, "CH375CloseDevice");
-			pSetTimeout = (pCH375SetTimeout)GetProcAddress(hModule, "CH375SetTimeout");
-			pReadData = (pCH375ReadEndP)GetProcAddress(hModule, "CH375ReadEndP");
-			pWriteData = (pCH375WriteEndP)GetProcAddress(hModule, "CH375WriteEndP");
-			if (pOpenDev == NULL || pCloseDev == NULL || pSetTimeout == NULL || pReadData == NULL || pWriteData == NULL)
-			{
-				LOG_ERROR("GetProcAddress error");
-				return ERROR_FAIL;
-			}
-			if (pOpenDev(gIndex) == -1)
-			{
-				gOpen = FALSE;
-				LOG_ERROR("WLink Open Error");
-				return ERROR_FAIL;
-			}
-			pSetTimeout(gIndex, 5000, 5000);
+			LOG_ERROR("LoadLibrary WCHLinkDll.dll error");
+			return ERROR_FAIL;
 		}
+		pOpenDev = (pCH375OpenDevice)GetProcAddress(hModule, "CH375OpenDevice");
+		pCloseDev = (pCH375CloseDevice)GetProcAddress(hModule, "CH375CloseDevice");
+		pSetTimeout = (pCH375SetTimeout)GetProcAddress(hModule, "CH375SetTimeout");
+		pReadData = (pCH375ReadEndP)GetProcAddress(hModule, "CH375ReadEndP");
+		pWriteData = (pCH375WriteEndP)GetProcAddress(hModule, "CH375WriteEndP");
+		if (pOpenDev == NULL || pCloseDev == NULL || pSetTimeout == NULL || pReadData == NULL || pWriteData == NULL)
+		{
+			LOG_ERROR("GetProcAddress error");
+			return ERROR_FAIL;
+		}
+		if (pOpenDev(gIndex) == -1)
+		{
+			gOpen = FALSE;
+			LOG_ERROR("WLink Open Error");
+			return ERROR_FAIL;
+		}
+		pSetTimeout(gIndex, 5000, 5000);
 	}
-#else if
+#else
 
 	if (jtag_libusb_open(wlink_vids, wlink_pids, &wfd, NULL) != ERROR_OK)
 	{
@@ -2040,6 +2076,7 @@ int wlink_init(void)
 		if((chip_type==0x30520508)   ||  (chip_type == 0x305b0508)||  (chip_type == 0x30740508)||  (chip_type == 0x30720508) ||  (chip_type == 0x73550000))
 			pageerase=true;	
 		tmpchip = rxbuf[3];
+		wlink_detected_chip = tmpchip;
 		if((riscvchip==0x4e)||(riscvchip==0x0f)){
 			if((riscvchip==0x0f)){
 
@@ -2290,7 +2327,7 @@ int wlink_init(void)
 			LOG_ERROR(" communication fail,please contact [support@mounriver.com]");
 			goto error_wlink;
 		}
-#ifdef _WIN32
+#ifdef WLINK_USE_CH375_DLL
 		gOpen = TRUE;
 #endif
 	}
@@ -2326,7 +2363,7 @@ int wlink_init(void)
 		}
 
 	return ERROR_OK;
-#ifdef _WIN32
+#ifdef WLINK_USE_CH375_DLL
 error_wlink:
 
 	wlink_endprocess();
@@ -2376,20 +2413,52 @@ int wlink_write(const uint8_t *buffer, uint32_t offset, uint32_t count)
 	if ((riscvchip == 0x09)||(riscvchip == 0x4E))
 		packsize = 1024;
 	uint8_t *buf_bin;
-	uint32_t end_len;
 	buf_bin = malloc(packsize);
 	memset(buf_bin, 0xff, packsize);
-    int binlength=0;
-	if(count % 256 == 0) {
-        binlength = count;
-    } else {
-        binlength = ((count / 256) + 1) * 256;
+	uint32_t alignment = WLINK_DEFAULT_WRITE_ALIGNMENT;
+	bool ch32v003_boot = ch32v003_boot_write_range(offset);
+
+	if (ch32v003_boot)
+		alignment = CH32V003_BOOT_WRITE_ALIGNMENT;
+
+	int binlength = (int)wlink_round_up(count, alignment);
+
+	if (ch32v003_boot) {
+		uint64_t padded_end = (uint64_t)offset + (uint64_t)binlength;
+		uint64_t writable_end = (uint64_t)CH32V003_BOOT_FLASH_BASE + (uint64_t)CH32V003_BOOT_WRITABLE_SIZE;
+
+		LOG_INFO("CH32V003 BOOT write padding: address=0x%08x count=0x%08x"
+			" alignment=%u padded=0x%08x writable_end=0x%08x",
+			offset, count, alignment, (uint32_t)binlength, (uint32_t)(writable_end - 1));
+
+		if (padded_end > writable_end) {
+			LOG_ERROR("Refusing CH32V003 BOOT write that would cross writable system storage:"
+				" address=0x%08x count=0x%08x padded=0x%08x end=0x%08x limit=0x%08x",
+				offset, count, (uint32_t)binlength, (uint32_t)(padded_end - 1), (uint32_t)(writable_end - 1));
+			free(buf_bin);
+			return ERROR_FAIL;
+		}
 	}
+
+	uint64_t transfer_end = (uint64_t)offset + (uint64_t)binlength;
+	LOG_INFO("wlink_write plan: chip=0x%02x detected=0x%02x address=0x%08x"
+		" count=0x%08x alignment=%u padded=0x%08x end=0x%08x"
+		" packsize=%d ch32v003_boot=%d trap=%d",
+		riscvchip, wlink_detected_chip, offset, count, alignment,
+		(uint32_t)binlength, (uint32_t)(transfer_end ? transfer_end - 1 : offset),
+		packsize, ch32v003_boot, wlink_write_plan_trap);
+
+	if (wlink_write_plan_trap) {
+		LOG_ERROR("WCH-Link write plan trap: refusing to execute flash transfer");
+		free(buf_bin);
+		return ERROR_FAIL;
+	}
+
 	wlink_ready_write(offset, binlength);
 
 	if (binlength <= packsize)
 	{
-		for (int i = 0; i < count; i++)
+		for (uint32_t i = 0; i < count; i++)
 		{
 			buf_bin[i] = *(buffer + i);
 		}
@@ -2419,7 +2488,8 @@ int wlink_write(const uint8_t *buffer, uint32_t offset, uint32_t count)
 		{   
 			
 			memset(buf_bin, 0xff, packsize);
-			for (int i = 0; i < count%packsize; i++)
+			uint32_t tail_count = count % (uint32_t)packsize;
+			for (uint32_t i = 0; i < tail_count; i++)
 			{
 				buf_bin[i] = *(buffer + i);
 			}
@@ -2586,6 +2656,20 @@ COMMAND_HANDLER(noload)
 	noloadflag = true;
 	return ERROR_OK;
 }
+COMMAND_HANDLER(wlink_write_plan_trap_cmd)
+{
+	if (CMD_ARGC > 1)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	if (CMD_ARGC == 0)
+		wlink_write_plan_trap = true;
+	else
+		COMMAND_PARSE_ON_OFF(CMD_ARGV[0], wlink_write_plan_trap);
+
+	LOG_INFO("WCH-Link write plan trap %s",
+		wlink_write_plan_trap ? "enabled" : "disabled");
+	return ERROR_OK;
+}
 COMMAND_HANDLER(pow3v3)
 {
 	iocontrol=1;
@@ -2681,6 +2765,13 @@ static const struct command_registration wlink_command_handlers[] = {
 		.mode = COMMAND_CONFIG,
 		.help = "noload",
 		.usage = "dont download",
+	},
+	{
+		.name = "wlink_write_plan_trap",
+		.handler = &wlink_write_plan_trap_cmd,
+		.mode = COMMAND_ANY,
+		.help = "log the final WCH-Link flash write plan and abort before flash transfer",
+		.usage = "['on'|'off']",
 	},
 	{
 		.name = "disabledebug",

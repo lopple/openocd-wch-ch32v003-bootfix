@@ -34,10 +34,20 @@ extern void wlink_clean(void);
 extern int wlink_quitreset(void);
 extern void wlink_chip(void);
 extern unsigned long wlink_address;
+extern unsigned long chipiaddr;
 extern bool pageerase;
 int writeloop =0 ;
 extern unsigned int chip_type;
+extern unsigned char wlink_detected_chip;
 bool flash_unfreeze=false;
+
+#define CH32V003_USER_FLASH_BASE 0x08000000U
+#define CH32V003_USER_FLASH_SIZE 0x00004000U
+#define CH32V003_BOOT_FLASH_BASE 0x1ffff000U
+#define CH32V003_BOOT_FLASH_SIZE 0x00001000U
+/* Avoid padded writes into the system identity area around 0x1ffff7e8. */
+#define CH32V003_BOOT_WRITABLE_SIZE 0x00000780U
+
 struct ch32vx_options
 {
 	uint8_t rdp;
@@ -78,6 +88,154 @@ FLASH_BANK_COMMAND_HANDLER(ch32vx_flash_bank_command)
 
 	return ERROR_OK;
 }
+
+static target_addr_t ch32vx_target_address(struct flash_bank *bank, uint32_t offset)
+{
+	return bank->base + offset;
+}
+
+static uint32_t ch32vx_current_wlink_address(struct flash_bank *bank, uint32_t offset)
+{
+	uint32_t resolved = (uint32_t)(chipiaddr + ch32vx_target_address(bank, offset));
+
+	if (resolved >= 0x10000000)
+		resolved -= 0x08000000;
+
+	return resolved;
+}
+
+static bool ch32vx_valid_erase_range(struct flash_bank *bank, int first, int last)
+{
+	return bank->sectors && first >= 0 && last >= first && last < (int)bank->num_sectors;
+}
+
+static bool ch32vx_full_bank_erase(struct flash_bank *bank, int first, int last)
+{
+	return ch32vx_valid_erase_range(bank, first, last)
+		&& first == 0 && last == (int)bank->num_sectors - 1;
+}
+
+static bool ch32vx_is_ch32v003(void)
+{
+	return riscvchip == 0x09 && wlink_detected_chip != 0x49;
+}
+
+static bool ch32vx_use_configured_bank_geometry(struct flash_bank *bank)
+{
+	return ch32vx_is_ch32v003() && bank->base != 0 && bank->size != 0;
+}
+
+static bool ch32v003_known_flash_bank(struct flash_bank *bank)
+{
+	return (bank->base == CH32V003_USER_FLASH_BASE
+			&& bank->size > 0
+			&& bank->size <= CH32V003_USER_FLASH_SIZE)
+		|| (bank->base == CH32V003_BOOT_FLASH_BASE
+			&& bank->size > 0
+			&& bank->size <= CH32V003_BOOT_FLASH_SIZE);
+}
+
+static bool ch32vx_range_within(target_addr_t address, uint32_t count,
+		target_addr_t base, uint32_t size)
+{
+	if (count == 0)
+		return true;
+
+	uint64_t start = (uint64_t)address;
+	uint64_t end = start + (uint64_t)count - 1;
+	uint64_t range_start = (uint64_t)base;
+	uint64_t range_end = range_start + (uint64_t)size - 1;
+
+	return end >= start && start >= range_start && end <= range_end;
+}
+
+static int ch32vx_validate_write_range(struct flash_bank *bank, uint32_t offset, uint32_t count)
+{
+	if (!ch32vx_is_ch32v003())
+		return ERROR_OK;
+
+	if (!ch32v003_known_flash_bank(bank)) {
+		LOG_ERROR("Refusing CH32V003 write without explicit USER/BOOT flash bank:"
+			" bank=%s base=" TARGET_ADDR_FMT " size=0x%08" PRIx32,
+			bank->name, bank->base, bank->size);
+		LOG_ERROR("Use tcl/target/wch-riscv-ch32v003.cfg or define USER 0x%08x/BOOT 0x%08x banks",
+			CH32V003_USER_FLASH_BASE, CH32V003_BOOT_FLASH_BASE);
+		return ERROR_FAIL;
+	}
+
+	target_addr_t address = ch32vx_target_address(bank, offset);
+
+	if (ch32vx_range_within(address, count, CH32V003_USER_FLASH_BASE, CH32V003_USER_FLASH_SIZE)
+			|| ch32vx_range_within(address, count, CH32V003_BOOT_FLASH_BASE, CH32V003_BOOT_WRITABLE_SIZE))
+		return ERROR_OK;
+
+	LOG_ERROR("Refusing CH32V003 write outside explicit USER/BOOT writable ranges:"
+		" bank=%s base=" TARGET_ADDR_FMT " offset=0x%08" PRIx32
+		" target_addr=" TARGET_ADDR_FMT " count=0x%08" PRIx32,
+		bank->name, bank->base, offset, address, count);
+	LOG_ERROR("Allowed CH32V003 write ranges: USER 0x%08x..0x%08x, BOOT writable 0x%08x..0x%08x",
+		CH32V003_USER_FLASH_BASE,
+		CH32V003_USER_FLASH_BASE + CH32V003_USER_FLASH_SIZE - 1,
+		CH32V003_BOOT_FLASH_BASE,
+		CH32V003_BOOT_FLASH_BASE + CH32V003_BOOT_WRITABLE_SIZE - 1);
+
+	return ERROR_FAIL;
+}
+
+static void ch32vx_log_erase_request(struct flash_bank *bank, int first, int last)
+{
+	target_addr_t start = bank->base;
+	target_addr_t end = bank->base;
+
+	if (ch32vx_valid_erase_range(bank, first, last)) {
+		start = bank->base + bank->sectors[first].offset;
+		end = bank->base + bank->sectors[last].offset + bank->sectors[last].size - 1;
+	}
+
+	LOG_INFO("wch_riscv erase request: bank=%s base=" TARGET_ADDR_FMT
+		" first=%d last=%d range=" TARGET_ADDR_FMT ".." TARGET_ADDR_FMT,
+		bank->name, bank->base, first, last, start, end);
+
+	if (ch32vx_is_ch32v003())
+		LOG_WARNING("wch_riscv CH32V003 addressless erase is disabled unless page_erase bypasses this callback");
+}
+
+static int ch32vx_validate_erase_request(struct flash_bank *bank, int first, int last)
+{
+	if (!ch32vx_valid_erase_range(bank, first, last)) {
+		LOG_ERROR("Refusing invalid erase range: bank=%s first=%d last=%d num_sectors=%u",
+			bank->name, first, last, bank->num_sectors);
+		return ERROR_FAIL;
+	}
+
+	if (ch32vx_is_ch32v003()) {
+		if (ch32vx_full_bank_erase(bank, first, last))
+			LOG_ERROR("Refusing CH32V003 addressless full-bank erase: bank=%s base="
+				TARGET_ADDR_FMT " sectors=%u", bank->name, bank->base, bank->num_sectors);
+		else
+			LOG_ERROR("Refusing CH32V003 range erase because wlink_erase() has no address/range:"
+				" bank=%s first=%d last=%d", bank->name, first, last);
+
+		LOG_ERROR("Use the WCH page_erase write path only after independent USER/BOOT readback safety checks");
+		return ERROR_FAIL;
+	}
+
+	if (!ch32vx_full_bank_erase(bank, first, last))
+		LOG_WARNING("WCH erase command has no address/range; legacy path will still call wlink_erase()");
+
+	return ERROR_OK;
+}
+
+static void ch32vx_log_write_request(struct flash_bank *bank, uint32_t offset, uint32_t count)
+{
+	LOG_INFO("wch_riscv write request: bank=%s base=" TARGET_ADDR_FMT
+		" offset=0x%08" PRIx32 " target_addr=" TARGET_ADDR_FMT
+		" count=0x%08" PRIx32
+		" wlink_addr=0x%08" PRIx32,
+		bank->name, bank->base, offset, ch32vx_target_address(bank, offset),
+		count, ch32vx_current_wlink_address(bank, offset));
+}
+
 static int ch32x_protect(struct flash_bank *bank, int set, int first, int last)
 {
 
@@ -122,6 +280,12 @@ static int ch32vx_erase(struct flash_bank *bank, int first, int last)
 	if (noloadflag)
 		return ERROR_OK;
 
+	ch32vx_log_erase_request(bank, first, last);
+
+	int retval = ch32vx_validate_erase_request(bank, first, last);
+	if (retval != ERROR_OK)
+		return retval;
+
 	int ret = wlink_erase();
 	target_halt(bank->target);
 	
@@ -160,19 +324,35 @@ static int ch32vx_write(struct flash_bank *bank, const uint8_t *buffer,
 			offset = 0;
 		else
 			offset -= mod;
+		if (count > UINT32_MAX - mod) {
+			LOG_ERROR("Refusing write with wrapped padded count: count=0x%08" PRIx32
+				" mod=0x%08x", count, mod);
+			return ERROR_FAIL;
+		}
+		uint32_t write_count = count + mod;
+		int retval = ch32vx_validate_write_range(bank, offset, write_count);
+		if (retval != ERROR_OK)
+			return retval;
+		uint32_t write_address = (uint32_t)ch32vx_target_address(bank, offset);
 		uint8_t *buffer1;
 		uint8_t *buffer2;
-		buffer1 = malloc(count + mod);
+		buffer1 = malloc(write_count);
 		buffer2 = malloc(mod);
-		target_read_memory(bank->target, offset, 1, mod, buffer2);
+		target_read_memory(bank->target, write_address, 1, mod, buffer2);
 		memcpy(buffer1, buffer2, mod);
 		memcpy(&buffer1[mod], buffer, count);
-		ret = wlink_write(buffer1, offset, count + mod);
+		ch32vx_log_write_request(bank, offset, write_count);
+		ret = wlink_write(buffer1, write_address, write_count);
 	}
 	else
 	{
 		target_halt(target);
-		ret = wlink_write(buffer, offset, count);
+		int retval = ch32vx_validate_write_range(bank, offset, count);
+		if (retval != ERROR_OK)
+			return retval;
+		uint32_t write_address = (uint32_t)ch32vx_target_address(bank, offset);
+		ch32vx_log_write_request(bank, offset, count);
+		ret = wlink_write(buffer, write_address, count);
 	}
 
 	// wlink_quitreset();
@@ -292,13 +472,16 @@ static int ch32vx_probe(struct flash_bank *bank)
 {
 	struct ch32vx_flash_bank *ch32vx_info = bank->driver_priv;
 	uint16_t delfault_max_flash_size = 512;
-	uint32_t flash_size_in_kb;
+	uint32_t flash_size_in_kb = 0;
 	uint32_t device_id = 0;
 	uint32_t rom = 0;
 	uint32_t ram = 0;
 	int page_size;
-	uint32_t base_address = (uint32_t)wlink_address;
+	uint32_t configured_size = (uint32_t)bank->size;
+	bool use_configured_geometry = ch32vx_use_configured_bank_geometry(bank);
+	uint32_t base_address = use_configured_geometry ? (uint32_t)bank->base : (uint32_t)wlink_address;
 	uint32_t rid = 0;
+	int num_pages;
 	ch32vx_info->probed = 0;
 
 	/* read ch32 device id register */
@@ -310,13 +493,23 @@ static int ch32vx_probe(struct flash_bank *bank)
 	page_size = 1024;
 	ch32vx_info->ppage_size = 4;
 
-	/* get flash size from target. */
-	retval = ch32vx_get_flash_size(bank, &flash_size_in_kb);
+	if (use_configured_geometry) {
+		num_pages = (configured_size + page_size - 1) / page_size;
+		LOG_INFO("CH32V003 configured flash bank: base=" TARGET_ADDR_FMT
+			" size=0x%08" PRIx32 " pages=%d",
+			bank->base, configured_size, num_pages);
+	} else {
+		/* get flash size from target. */
+		retval = ch32vx_get_flash_size(bank, &flash_size_in_kb);
+		if (retval != ERROR_OK)
+			return retval;
 
-	if ((flash_size_in_kb)&&(!flash_unfreeze)&&(riscvchip !=0x09))
-		LOG_INFO("flash size = %dkbytes", flash_size_in_kb);
-	else
-		flash_size_in_kb = delfault_max_flash_size;
+		if ((flash_size_in_kb)&&(!flash_unfreeze)&&(riscvchip !=0x09))
+			LOG_INFO("flash size = %dkbytes", flash_size_in_kb);
+		else
+			flash_size_in_kb = delfault_max_flash_size;
+		num_pages = flash_size_in_kb * 1024 / page_size;
+	}
 	if ((riscvchip == 0x05) || (riscvchip == 0x06)|| (riscvchip == 0x86))
 	{
 		wlink_getromram(&rom, &ram);
@@ -324,7 +517,6 @@ static int ch32vx_probe(struct flash_bank *bank)
 			LOG_INFO("ROM %d kbytes RAM %d kbytes", rom, ram);
 	}
 	// /* calculate numbers of pages */
-	int num_pages = flash_size_in_kb * 1024 / page_size;
 	bank->base = base_address;
 	bank->size = (num_pages * page_size);
 	bank->num_sectors = num_pages;

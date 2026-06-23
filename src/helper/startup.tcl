@@ -23,7 +23,11 @@ add_help_text find "print full path to file according to OpenOCD search rules"
 
 # Find and run a script
 proc script {filename} {
-	uplevel #0 [list source [find $filename]]
+	set full_filename [find $filename]
+	set f [open $full_filename]
+	set s [read $f]
+	close $f
+	uplevel #0 $s
 }
 add_help_text script "filename of OpenOCD script (tcl) to run"
 add_usage_text script "<file>"

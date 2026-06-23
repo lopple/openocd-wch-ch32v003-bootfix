@@ -284,6 +284,9 @@ AC_ARG_ENABLE([jtag_vpi],
 AC_ARG_ENABLE([wlinke],
   AS_HELP_STRING([--enable-wlinke], [Enable building support for WLINKE]),
   [build_wlinke=$enableval], [build_wlinke=no])
+AC_ARG_ENABLE([wlinke-ch375-dll],
+  AS_HELP_STRING([--enable-wlinke-ch375-dll], [Use WCHLinkDLL/CH375 backend for WLINKE on Windows]),
+  [enable_wlinke_ch375_dll=$enableval], [enable_wlinke_ch375_dll=no])
 AC_ARG_ENABLE([ch347],
   AS_HELP_STRING([--enable-ch347], [Enable building support for CH347]),
   [build_ch347=$enableval], [build_ch347=no])
@@ -538,6 +541,13 @@ AS_IF([test "x$build_wlinke" = "xyes"], [
   AC_DEFINE([BUILD_WLINKE], [1], [1 if you want WLINKE.])
 ], [
   AC_DEFINE([BUILD_WLINKE], [0], [0 if you don't want WLINKE.])
+])
+
+AS_IF([test "x$enable_wlinke_ch375_dll" = "xyes"], [
+  AS_IF([test "x$is_win32" != "xyes"], [
+    AC_MSG_ERROR([--enable-wlinke-ch375-dll requires a Win32 host])
+  ])
+  AC_DEFINE([WLINK_USE_CH375_DLL], [1], [1 if WLINKE should use WCHLinkDLL/CH375 backend.])
 ])
 
 AS_IF([test "x$build_ch347" = "xyes"], [

@@ -90,7 +90,7 @@
 					      package length */
 #define CH347_CMD_HEADER             3     /* Protocol header length */
 
-#define CH347_CMD_HEADER 3 /* 协议包头长度 */
+#define CH347_CMD_HEADER 3 /* Protocol packet header length */
 /* Protocol transmission format: CMD (1 byte)+Length (2 bytes)+Data */
 #define CH347_CMD_INFO_RD            0xCA /* Parameter acquisition, used to
 					     obtain firmware version,
@@ -152,7 +152,7 @@ bool UsbHighDev = true;
 unsigned long USBC_PACKET;
 
 typedef struct _CH347_SWD_IO {
-	uint8_t usbcmd; /* 0xA0、0xA1、0xA2 */
+	uint8_t usbcmd; /* 0xA0, 0xA1, 0xA2 */
 	uint8_t cmd;
 	uint32_t *dst;
 	uint32_t value;
@@ -1188,7 +1188,7 @@ static bool CH347Jtag_INIT(uint64_t iIndex, uint8_t iClockRate)
 /**
  * ch347_speed - CH347 TCK frequency setting
  *  @param speed Frequency size set
- *  @return Success returns ERROR_OK，failed returns FALSE
+ *  @return Success returns ERROR_OK, failed returns FALSE
  */
 static int ch347_speed(int speed)
 {

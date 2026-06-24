@@ -138,15 +138,15 @@ As of 2026-06-23, the release candidate is `windows-x86` / `i686-mingw32`.
 Release asset in the public repository:
 
 ```text
-tag: v0.11.0-ch32v003bootfix.2
-source commit: 846f2cf5d057bf257ed5cfe21417983630099dc9
-workflow run: https://github.com/lopple/openocd-wch-ch32v003-bootfix/actions/runs/28009722292
-archiveFileName: openocd-wch-ch32v003-bootfix-0.11.0-ch32v003bootfix.2-windows-x86-wchdriver.zip
-url: https://github.com/lopple/openocd-wch-ch32v003-bootfix/releases/download/v0.11.0-ch32v003bootfix.2/openocd-wch-ch32v003-bootfix-0.11.0-ch32v003bootfix.2-windows-x86-wchdriver.zip
-openocd.exe version: 0.11.0+dev (2026-06-23-07:30)
-openocd.exe SHA256: 36A5926EFC44BC67AB41D46485A93BEA36E3920437715C4493BA424E492D5782
-zip size: 8176825
-zip SHA256: F4D10EE0D8629BA4EBAA2980BB31159825F7C2766D91CCD935CE85472CED835C
+tag: v0.11.0-ch32v003bootfix.3
+source commit: ff5b3524489dc5c0dad3a66c1f47cbb070246a93
+workflow run: https://github.com/lopple/openocd-wch-ch32v003-bootfix/actions/runs/28122912202
+archiveFileName: openocd-wch-ch32v003-bootfix-0.11.0-ch32v003bootfix.3-windows-x86-wchdriver.zip
+url: https://github.com/lopple/openocd-wch-ch32v003-bootfix/releases/download/v0.11.0-ch32v003bootfix.3/openocd-wch-ch32v003-bootfix-0.11.0-ch32v003bootfix.3-windows-x86-wchdriver.zip
+openocd.exe version: 0.11.0+dev (2026-06-24-19:09)
+openocd.exe SHA256: 6FDBFB7E4ADA07D01533BACE3037475C704881FA4CD49EA5BD52D2F0160CDE84
+zip size: 8185418
+zip SHA256: F4F335BB0C899012E82CD42C32E2A63E2DD844F40ECFDD792317F6688D1EDBAB
 ```
 
 These values were fixed after building the release asset from the public repository tag with GitHub Actions, publishing it, downloading it again, and confirming that SHA256/size matched the sidecar and Gate C record. Only assets that pass targetless smoke testing, release text/import audit, write-plan trap, and hardware BOOT write/readback are distributable. USER flash full/head hashes must match pre/post write, and the BOOT readback prefix must match the input bootloader.

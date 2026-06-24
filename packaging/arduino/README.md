@@ -35,19 +35,19 @@ Values for the actual package index are fixed after the release asset is created
 }
 ```
 
-Release asset values in the public repository are fixed after building from the public tag with GitHub Actions and passing the manual release gate. The following values are fixed for `v0.11.0-ch32v003bootfix.2`; `checksum` and `size` were confirmed by downloading the release asset again after publication.
+Release asset values in the public repository are fixed after building from the public tag with GitHub Actions and passing the manual release gate. The following values are fixed for `v0.11.0-ch32v003bootfix.3`; `checksum` and `size` were confirmed by downloading the release asset again after publication.
 
 ```json
 {
   "name": "openocd_wch",
-  "version": "0.11.0-ch32v003bootfix.2",
+  "version": "0.11.0-ch32v003bootfix.3",
   "systems": [
     {
       "host": "i686-mingw32",
-      "archiveFileName": "openocd-wch-ch32v003-bootfix-0.11.0-ch32v003bootfix.2-windows-x86-wchdriver.zip",
-      "url": "https://github.com/lopple/openocd-wch-ch32v003-bootfix/releases/download/v0.11.0-ch32v003bootfix.2/openocd-wch-ch32v003-bootfix-0.11.0-ch32v003bootfix.2-windows-x86-wchdriver.zip",
-      "checksum": "SHA-256:F4D10EE0D8629BA4EBAA2980BB31159825F7C2766D91CCD935CE85472CED835C",
-      "size": "8176825"
+      "archiveFileName": "openocd-wch-ch32v003-bootfix-0.11.0-ch32v003bootfix.3-windows-x86-wchdriver.zip",
+      "url": "https://github.com/lopple/openocd-wch-ch32v003-bootfix/releases/download/v0.11.0-ch32v003bootfix.3/openocd-wch-ch32v003-bootfix-0.11.0-ch32v003bootfix.3-windows-x86-wchdriver.zip",
+      "checksum": "SHA-256:F4F335BB0C899012E82CD42C32E2A63E2DD844F40ECFDD792317F6688D1EDBAB",
+      "size": "8185418"
     }
   ]
 }

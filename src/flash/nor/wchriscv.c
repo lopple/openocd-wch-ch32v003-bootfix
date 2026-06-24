@@ -163,7 +163,10 @@ static int ch32vx_read_protect_status(void)
 		return ERROR_FAIL;
 	}
 
-	wlink_chip();
+	if (riscvchip == 0 || wlink_detected_chip == 0) {
+		LOG_ERROR("WCH read-protect/code-protect status requires a detected chip; run init first");
+		return ERROR_FAIL;
+	}
 
 	if (!ch32vx_read_protect_supported()) {
 		LOG_ERROR("Read-protect status command is not supported for chip=0x%02x detected=0x%02x",

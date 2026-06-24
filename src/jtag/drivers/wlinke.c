@@ -1483,6 +1483,8 @@ int wlnik_protect_check(void)
 		LOG_DEBUG("WCH read-protect status response read failed");
 		return ERROR_FAIL;
 	}
+	LOG_INFO("WCH read-protect status raw response: %02x %02x %02x %02x",
+		rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3]);
 	if (((rxbuf[0] == 0x82) && (rxbuf[1] == 0x06) && (rxbuf[2] == 0x01) && (rxbuf[3] == 0x01)))
 		return WLINK_READ_PROTECT_ENABLED;
 	if (((rxbuf[0] == 0x82) && (rxbuf[1] == 0x06) && (rxbuf[2] == 0x01) && (rxbuf[3] == 0x02)))

@@ -21,6 +21,7 @@
 #include "imp.h"
 #include <helper/binarybuffer.h>
 #include <target/algorithm.h>
+#include <string.h>
 extern int wlink_erase(void);
 extern unsigned char riscvchip;
 extern void wlink_reset();
@@ -29,7 +30,9 @@ extern void wlink_getromram(uint32_t *rom, uint32_t *ram);
 extern int wlink_write(const uint8_t *buffer, uint32_t offset, uint32_t count);
 extern bool noloadflag;
 extern int wlink_flash_protect(bool stat);
+extern int wlink_flash_protect_request(bool stat);
 extern int wlnik_protect_check(void);
+extern int wlink_is_open(void);
 extern void wlink_clean(void);
 extern int wlink_quitreset(void);
 extern void wlink_chip(void);
@@ -47,6 +50,19 @@ bool flash_unfreeze=false;
 #define CH32V003_BOOT_FLASH_SIZE 0x00001000U
 /* Avoid padded writes into the system identity area around 0x1ffff7e8. */
 #define CH32V003_BOOT_WRITABLE_SIZE 0x00000780U
+#define CH32V003_FLASH_STATR 0x4002200cU
+#define CH32V003_FLASH_CTLR 0x40022010U
+#define CH32V003_FLASH_OBR 0x4002201cU
+#define CH32V003_FLASH_WPR 0x40022020U
+#define CH32V003_OPTION_BYTES_BASE 0x1ffff800U
+#define CH32V003_OPTION_BYTES_STATUS_SIZE 16U
+#define CH32V003_OPTION_WRP_OFFSET 8U
+#define CH32V003_OPTION_WRP_COUNT 4U
+
+enum ch32vx_read_protect_status {
+	CH32VX_READ_PROTECT_ENABLED = 4,
+	CH32VX_READ_PROTECT_DISABLED = 5,
+};
 
 struct ch32vx_options
 {
@@ -118,6 +134,136 @@ static bool ch32vx_full_bank_erase(struct flash_bank *bank, int first, int last)
 static bool ch32vx_is_ch32v003(void)
 {
 	return riscvchip == 0x09 && wlink_detected_chip != 0x49;
+}
+
+static bool ch32vx_read_protect_supported(void)
+{
+	return (riscvchip == 1) || (riscvchip == 5) || (riscvchip == 6)
+		|| (riscvchip == 9) || (riscvchip == 0x4e) || (riscvchip == 0x0c)
+		|| (riscvchip == 0x0e) || (riscvchip == 0x46)
+		|| (riscvchip == 0x86) || (riscvchip == 0x8e);
+}
+
+static const char *ch32vx_read_protect_status_name(int status)
+{
+	switch (status) {
+	case CH32VX_READ_PROTECT_ENABLED:
+		return "enabled";
+	case CH32VX_READ_PROTECT_DISABLED:
+		return "disabled";
+	default:
+		return "unknown";
+	}
+}
+
+static int ch32vx_read_protect_status(void)
+{
+	if (!wlink_is_open()) {
+		LOG_ERROR("WCH read-protect/code-protect status requires initialized WCH-Link; run init first");
+		return ERROR_FAIL;
+	}
+
+	wlink_chip();
+
+	if (!ch32vx_read_protect_supported()) {
+		LOG_ERROR("Read-protect status command is not supported for chip=0x%02x detected=0x%02x",
+			riscvchip, wlink_detected_chip);
+		return ERROR_FAIL;
+	}
+
+	int status = wlnik_protect_check();
+	if (status != CH32VX_READ_PROTECT_ENABLED
+			&& status != CH32VX_READ_PROTECT_DISABLED) {
+		LOG_ERROR("Failed to read WCH read-protect status for chip=0x%02x detected=0x%02x",
+			riscvchip, wlink_detected_chip);
+		return ERROR_FAIL;
+	}
+
+	if (!ch32vx_is_ch32v003()) {
+		LOG_WARNING("Read-protect commands are release-gated for CH32V003; current chip=0x%02x detected=0x%02x",
+			riscvchip, wlink_detected_chip);
+	}
+
+	return status;
+}
+
+static int ch32v003_print_raw_protection_status(struct command_invocation *cmd,
+		struct target *target)
+{
+	uint32_t statr = 0;
+	uint32_t ctlr = 0;
+	uint32_t obr = 0;
+	uint32_t wpr = 0;
+	int retval;
+
+	retval = target_read_u32(target, CH32V003_FLASH_STATR, &statr);
+	if (retval != ERROR_OK)
+		return retval;
+	retval = target_read_u32(target, CH32V003_FLASH_CTLR, &ctlr);
+	if (retval != ERROR_OK)
+		return retval;
+	retval = target_read_u32(target, CH32V003_FLASH_OBR, &obr);
+	if (retval != ERROR_OK)
+		return retval;
+	retval = target_read_u32(target, CH32V003_FLASH_WPR, &wpr);
+	if (retval != ERROR_OK)
+		return retval;
+
+	command_print(cmd, "CH32V003 FLASH raw registers: STATR=0x%08" PRIx32
+		" CTLR=0x%08" PRIx32 " OBR=0x%08" PRIx32 " WPR=0x%08" PRIx32,
+		statr, ctlr, obr, wpr);
+	LOG_INFO("CH32V003 FLASH raw registers: STATR=0x%08" PRIx32
+		" CTLR=0x%08" PRIx32 " OBR=0x%08" PRIx32 " WPR=0x%08" PRIx32,
+		statr, ctlr, obr, wpr);
+
+	uint8_t option_bytes[CH32V003_OPTION_BYTES_STATUS_SIZE];
+	retval = target_read_buffer(target, CH32V003_OPTION_BYTES_BASE,
+		sizeof(option_bytes), option_bytes);
+	if (retval != ERROR_OK)
+		return retval;
+
+	command_print(cmd, "CH32V003 option bytes 0x%08x..0x%08x:"
+		" %02x %02x %02x %02x %02x %02x %02x %02x"
+		" %02x %02x %02x %02x %02x %02x %02x %02x",
+		CH32V003_OPTION_BYTES_BASE,
+		CH32V003_OPTION_BYTES_BASE + CH32V003_OPTION_BYTES_STATUS_SIZE - 1,
+		option_bytes[0], option_bytes[1], option_bytes[2], option_bytes[3],
+		option_bytes[4], option_bytes[5], option_bytes[6], option_bytes[7],
+		option_bytes[8], option_bytes[9], option_bytes[10], option_bytes[11],
+		option_bytes[12], option_bytes[13], option_bytes[14], option_bytes[15]);
+
+	uint8_t wrp[CH32V003_OPTION_WRP_COUNT];
+	bool all_wrp_ff = true;
+	bool complement_ok = true;
+	for (unsigned int i = 0; i < CH32V003_OPTION_WRP_COUNT; i++) {
+		unsigned int offset = CH32V003_OPTION_WRP_OFFSET + i * 2;
+		wrp[i] = option_bytes[offset];
+		uint8_t nwrp = option_bytes[offset + 1];
+		if (wrp[i] != 0xff)
+			all_wrp_ff = false;
+		if ((uint8_t)(wrp[i] ^ nwrp) != 0xff)
+			complement_ok = false;
+	}
+
+	command_print(cmd, "CH32V003 WRP raw bytes: WRP0=0x%02x WRP1=0x%02x"
+		" WRP2=0x%02x WRP3=0x%02x complement=%s",
+		wrp[0], wrp[1], wrp[2], wrp[3],
+		complement_ok ? "ok" : "mismatch");
+
+	if (all_wrp_ff) {
+		command_print(cmd, "CH32V003 write-protect summary: WRP bytes are all 0xff; no WRP-protected region is indicated.");
+		LOG_INFO("CH32V003 write-protect summary: WRP bytes are all 0xff");
+	} else {
+		command_print(cmd, "CH32V003 write-protect summary: one or more WRP bytes are not 0xff; treat write-protect as active or unknown.");
+		LOG_WARNING("CH32V003 write-protect summary: non-0xff WRP bytes detected");
+	}
+
+	if (!complement_ok) {
+		command_print(cmd, "WARNING: WRP complement bytes do not match; use WCH-LinkUtility or datasheet-level inspection before changing protection.");
+		LOG_WARNING("CH32V003 WRP complement bytes do not match");
+	}
+
+	return ERROR_OK;
 }
 
 static bool ch32vx_use_configured_bank_geometry(struct flash_bank *bank)
@@ -239,8 +385,12 @@ static void ch32vx_log_write_request(struct flash_bank *bank, uint32_t offset, u
 static int ch32x_protect(struct flash_bank *bank, int set, int first, int last)
 {
 
-	if ((riscvchip == 1) || (riscvchip == 5) || (riscvchip == 6) || (riscvchip == 9)  || (riscvchip == 0x4e)|| (riscvchip ==0x0c)||(riscvchip==0x0e)||(riscvchip==0x46)||(riscvchip==0x86)||(riscvchip==0x8e))
+	if (ch32vx_read_protect_supported())
 	{
+		LOG_WARNING("WCH flash protect command toggles read-protect/code-protect, not per-sector write-protect");
+		if (!set) {
+			LOG_WARNING("Disabling read-protect may erase or disturb USER flash; verify/rewrite USER flash after this operation");
+		}
 		int retval = wlink_flash_protect(set);
 		if (retval == ERROR_OK)
 		{
@@ -271,7 +421,7 @@ static int ch32vx_erase(struct flash_bank *bank, int first, int last)
 	if ((riscvchip == 5) || (riscvchip == 6) || (riscvchip == 9)||  (riscvchip == 0x4e)|| (riscvchip == 0x0c)||(riscvchip==0x0e)||(riscvchip==0x46)||(riscvchip==0x0f)||(riscvchip==0x86)||(riscvchip==0x8e))
 	{
 		int retval = wlnik_protect_check();
-		if (retval == 4)
+		if (retval == CH32VX_READ_PROTECT_ENABLED)
 		{
 			LOG_ERROR("Read-Protect Status Currently Enabled");
 			return ERROR_FAIL;
@@ -305,7 +455,7 @@ static int ch32vx_write(struct flash_bank *bank, const uint8_t *buffer,
 	if (((riscvchip == 5) || (riscvchip == 6) || (riscvchip == 9)|| (riscvchip == 0x4e)|| (riscvchip == 0x0c)||(riscvchip==0x0e)||(riscvchip==0x46)||(riscvchip==0x0f)) && (writeloop==0)||(riscvchip==0x86)||(riscvchip==0x8e))
 	{
 		int retval = wlnik_protect_check();
-		if (retval == 4)
+		if (retval == CH32VX_READ_PROTECT_ENABLED)
 		{
 			LOG_ERROR("Read-Protect Status Currently Enabled");
 			return ERROR_FAIL;
@@ -542,6 +692,125 @@ COMMAND_HANDLER(ch32vx_handle_unfreeze_command)
 	return ERROR_OK;
 }
 
+COMMAND_HANDLER(ch32vx_handle_read_protect_status_command)
+{
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	int status = ch32vx_read_protect_status();
+	if (status < 0)
+		return status;
+
+	command_print(CMD, "WCH read-protect/code-protect status: %s",
+		ch32vx_read_protect_status_name(status));
+	LOG_INFO("WCH read-protect/code-protect status: %s",
+		ch32vx_read_protect_status_name(status));
+
+	return ERROR_OK;
+}
+
+COMMAND_HANDLER(ch32vx_handle_protection_status_command)
+{
+	if (CMD_ARGC != 0)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	int status = ch32vx_read_protect_status();
+	if (status < 0)
+		return status;
+
+	command_print(CMD, "WCH read-protect/code-protect status: %s",
+		ch32vx_read_protect_status_name(status));
+	LOG_INFO("WCH read-protect/code-protect status: %s",
+		ch32vx_read_protect_status_name(status));
+
+	if (!ch32vx_is_ch32v003()) {
+		command_print(CMD, "CH32V003 option/WRP raw status is not available for chip=0x%02x detected=0x%02x.",
+			riscvchip, wlink_detected_chip);
+		return ERROR_OK;
+	}
+
+	if (status == CH32VX_READ_PROTECT_ENABLED) {
+		command_print(CMD, "CH32V003 option/WRP target-memory read skipped because read-protect is enabled.");
+		command_print(CMD, "Do not infer WRP from target memory while read-protect is enabled; query WCH-LinkUtility or disable read-protect only with USER erase approval.");
+		LOG_WARNING("CH32V003 option/WRP raw read skipped because read-protect is enabled");
+		return ERROR_OK;
+	}
+
+	struct target *target = get_current_target(CMD_CTX);
+	if (!target) {
+		LOG_ERROR("No current target; cannot read CH32V003 option/WRP status");
+		return ERROR_FAIL;
+	}
+
+	int retval = ch32v003_print_raw_protection_status(CMD, target);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("Failed to read CH32V003 option/WRP raw status");
+		command_print(CMD, "Failed to read CH32V003 option/WRP raw status.");
+		return retval;
+	}
+
+	return ERROR_OK;
+}
+
+COMMAND_HANDLER(ch32vx_handle_disable_read_protect_command)
+{
+	const char *confirmation = "confirm-user-flash-erase";
+
+	if (CMD_ARGC != 1 || strcmp(CMD_ARGV[0], confirmation) != 0) {
+		LOG_ERROR("Refusing to disable read-protect without explicit confirmation");
+		LOG_ERROR("Disabling CH32 read-protect may erase or disturb USER flash");
+		LOG_ERROR("Usage: wch_riscv disable_read_protect %s", confirmation);
+		command_print(CMD, "Refusing to disable read-protect without explicit confirmation.");
+		command_print(CMD, "This operation may erase or disturb USER flash.");
+		command_print(CMD, "Usage: wch_riscv disable_read_protect %s", confirmation);
+		return ERROR_COMMAND_SYNTAX_ERROR;
+	}
+
+	int status = ch32vx_read_protect_status();
+	if (status < 0) {
+		command_print(CMD, "Failed to read current read-protect/code-protect status.");
+		command_print(CMD, "Run init first and retry before changing protection.");
+		return status;
+	}
+
+	if (status == CH32VX_READ_PROTECT_DISABLED) {
+		command_print(CMD, "WCH read-protect/code-protect is already disabled.");
+		LOG_INFO("WCH read-protect/code-protect is already disabled");
+		return ERROR_OK;
+	}
+
+	LOG_WARNING("Disabling CH32 read-protect/code-protect now");
+	LOG_WARNING("USER flash may be erased or disturbed by this operation");
+	LOG_WARNING("After disable, verify BOOT readback and rewrite/verify USER flash from a known image");
+	command_print(CMD, "WARNING: disabling CH32 read-protect/code-protect now.");
+	command_print(CMD, "WARNING: USER flash may be erased or disturbed.");
+
+	int retval = wlink_flash_protect_request(false);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("Failed to disable WCH read-protect/code-protect");
+		return retval;
+	}
+
+	status = ch32vx_read_protect_status();
+	if (status < 0) {
+		command_print(CMD, "WCH read-protect/code-protect disable request was accepted.");
+		command_print(CMD, "WARNING: final status read failed; reconnect and verify USER/BOOT flash.");
+		LOG_WARNING("WCH read-protect/code-protect disable request was accepted, but final status read failed");
+		return ERROR_OK;
+	}
+	if (status != CH32VX_READ_PROTECT_DISABLED) {
+		LOG_ERROR("Read-protect disable command completed but final status is %s",
+			ch32vx_read_protect_status_name(status));
+		return ERROR_FAIL;
+	}
+
+	command_print(CMD, "WCH read-protect/code-protect disabled.");
+	command_print(CMD, "USER flash may have been erased; rewrite/verify USER flash from a known image.");
+	LOG_WARNING("WCH read-protect/code-protect disabled; USER flash may have been erased");
+
+	return ERROR_OK;
+}
+
 
 static const struct command_registration ch32vx_exec_command_handlers[] = {
 	{
@@ -550,6 +819,27 @@ static const struct command_registration ch32vx_exec_command_handlers[] = {
 		.mode = COMMAND_EXEC,
 		.usage = "",
 		.help = "unfreeze entire flash device.",
+	},
+	{
+		.name = "read_protect_status",
+		.handler = ch32vx_handle_read_protect_status_command,
+		.mode = COMMAND_ANY,
+		.usage = "",
+		.help = "read WCH read-protect/code-protect status.",
+	},
+	{
+		.name = "protection_status",
+		.handler = ch32vx_handle_protection_status_command,
+		.mode = COMMAND_ANY,
+		.usage = "",
+		.help = "read WCH read-protect status and CH32V003 raw option/WRP status.",
+	},
+	{
+		.name = "disable_read_protect",
+		.handler = ch32vx_handle_disable_read_protect_command,
+		.mode = COMMAND_ANY,
+		.usage = "confirm-user-flash-erase",
+		.help = "disable WCH read-protect/code-protect after explicit confirmation.",
 	},
 	COMMAND_REGISTRATION_DONE
 };

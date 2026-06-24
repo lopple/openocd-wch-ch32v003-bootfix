@@ -21,6 +21,7 @@
 #include <jtag/adapter.h>
 #include <jtag/interface.h>
 #include <jtag/commands.h>
+#include <string.h>
 #ifdef HAVE_ARPA_INET_H
 #include <arpa/inet.h>
 #endif
@@ -124,11 +125,18 @@ bool wlink_write_plan_trap = false;
 extern int writeloop;
 uint8_t sp=1;
 
+int wlink_is_open(void);
+
 #define CH32V003_BOOT_FLASH_BASE 0x1ffff000U
 /* Avoid padded writes into the system identity area around 0x1ffff7e8. */
 #define CH32V003_BOOT_WRITABLE_SIZE 0x00000780U
 #define CH32V003_BOOT_WRITE_ALIGNMENT 64U
 #define WLINK_DEFAULT_WRITE_ALIGNMENT 256U
+
+enum wlink_read_protect_status {
+	WLINK_READ_PROTECT_ENABLED = 4,
+	WLINK_READ_PROTECT_DISABLED = 5,
+};
 
 static bool ch32v003_boot_write_range(uint32_t address)
 {
@@ -1457,6 +1465,11 @@ void wlink_chip_reset()
 }
 int wlnik_protect_check(void)
 {
+	if (!wlink_is_open()) {
+		LOG_ERROR("WCH-Link is not initialized; cannot read protect status");
+		return ERROR_FAIL;
+	}
+
 	unsigned char txbuf[4];
 	unsigned char rxbuf[4];
 	unsigned long len = 4;
@@ -1466,15 +1479,26 @@ int wlnik_protect_check(void)
 	txbuf[3] = 0x01;
 	pWriteData(0, 1, txbuf, &len);
 	len = 4;
-	pReadData(0, 1, rxbuf, &len);
+	if (!pReadData(0, 1, rxbuf, &len)) {
+		LOG_DEBUG("WCH read-protect status response read failed");
+		return ERROR_FAIL;
+	}
 	if (((rxbuf[0] == 0x82) && (rxbuf[1] == 0x06) && (rxbuf[2] == 0x01) && (rxbuf[3] == 0x01)))
-		return 4;
+		return WLINK_READ_PROTECT_ENABLED;
 	if (((rxbuf[0] == 0x82) && (rxbuf[1] == 0x06) && (rxbuf[2] == 0x01) && (rxbuf[3] == 0x02)))
-		return 5;
+		return WLINK_READ_PROTECT_DISABLED;
+	LOG_DEBUG("Unexpected WCH read-protect status response: %02x %02x %02x %02x",
+		rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3]);
 	return ERROR_FAIL;
 }
-int wlink_flash_protect(bool stat)
+
+int wlink_flash_protect_request_no_reset(bool stat)
 {
+	if (!wlink_is_open()) {
+		LOG_ERROR("WCH-Link is not initialized; cannot change protect status");
+		return ERROR_FAIL;
+	}
+
 	unsigned char txbuf[4];
 	unsigned char rxbuf[4];
 	unsigned long len = 4;
@@ -1487,15 +1511,44 @@ int wlink_flash_protect(bool stat)
 		txbuf[3] = 0x02;
 	pWriteData(0, 1, txbuf, &len);
 	len = 4;
-	pReadData(0, 1, rxbuf, &len);
+	if (!pReadData(0, 1, rxbuf, &len)) {
+		LOG_DEBUG("WCH read-protect change response read failed");
+		return ERROR_FAIL;
+	}
 	if (((rxbuf[0] == 0x82) && (rxbuf[1] == 0x06) && (rxbuf[2] == 0x01) && (rxbuf[3] == txbuf[3])))
 	{
-		wlink_reset();
-		usleep(300000);
+		return ERROR_OK;
+	}
+
+	LOG_DEBUG("Unexpected WCH read-protect change response: %02x %02x %02x %02x",
+		rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3]);
+	return ERROR_FAIL;
+}
+
+int wlink_flash_protect_request(bool stat)
+{
+	int retval = wlink_flash_protect_request_no_reset(stat);
+	if (retval != ERROR_OK)
+		return retval;
+
+	wlink_reset();
+	usleep(300000);
+	return ERROR_OK;
+}
+
+int wlink_flash_protect(bool stat)
+{
+	if (!wlink_is_open()) {
+		LOG_ERROR("WCH-Link is not initialized; cannot change protect status");
+		return ERROR_FAIL;
+	}
+
+	if (wlink_flash_protect_request(stat) == ERROR_OK)
+	{
 		int ret = wlnik_protect_check();
-		if ((stat) && (ret == 4))
+		if ((stat) && (ret == WLINK_READ_PROTECT_ENABLED))
 			return ERROR_OK;
-		if ((!stat) && (ret == 5))
+		if ((!stat) && (ret == WLINK_READ_PROTECT_DISABLED))
 			return ERROR_OK;
 	}
 	return ERROR_FAIL;
@@ -1880,10 +1933,13 @@ if(wlinke){
 
 }
 
-void wlink_code_erase(void){
+int wlink_code_erase(void)
+{
 	unsigned char txbuf[5];
 	unsigned char rxbuf[4];
 	unsigned long len = 4;
+	LOG_WARNING("WCH code erase request: chip=0x%02x; this operation has no address/range parameter", riscvchip);
+	LOG_WARNING("WCH code erase may erase target USER/code flash; verify or rewrite USER flash afterwards");
 	txbuf[0] = 0x81;
 	txbuf[1] = 0x0d;
 	txbuf[2] = 0x01;
@@ -1892,7 +1948,13 @@ void wlink_code_erase(void){
 	len = 5;
 	pWriteData(0, 1, txbuf, &len);
 	len = 4;
-	pReadData(0, 1, rxbuf, &len);
+	if (!pReadData(0, 1, rxbuf, &len)) {
+		LOG_DEBUG("WCH code erase response read failed");
+		return ERROR_FAIL;
+	}
+	LOG_DEBUG("WCH code erase response: %02x %02x %02x %02x",
+		rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3]);
+	return ERROR_OK;
 }
 
 int wlink_quit(void)
@@ -1919,6 +1981,15 @@ int wlink_quit(void)
 }
 
 
+
+int wlink_is_open(void)
+{
+#ifdef WLINK_USE_CH375_DLL
+	return gOpen && pReadData && pWriteData;
+#else
+	return wfd != NULL;
+#endif
+}
 
 int wlink_init(void)
 {
@@ -2005,7 +2076,8 @@ int wlink_init(void)
 			wlink_name = "WCH-LinkE  mode:RV";
 			wlinke = true;
 			if(encodeerase){
-				wlink_code_erase();
+				if (wlink_code_erase() != ERROR_OK)
+					LOG_ERROR("WCH code erase request failed");
 				goto error_wlink;
 			}
 			break;
@@ -2017,7 +2089,8 @@ int wlink_init(void)
 			wlink_name = "WCH-LinkW  mode:RV";
 			wlinkw = true;
 			if(encodeerase){
-				wlink_code_erase();
+				if (wlink_code_erase() != ERROR_OK)
+					LOG_ERROR("WCH code erase request failed");
 				goto error_wlink;
 			}
 			break;
@@ -2534,9 +2607,14 @@ int wlink_speed(int speed ){
 	
 	pWriteData(0, 1, txbuf, &len);
 	len=4;
-	pReadData(0, 1, rxbuf, &len);
+	if (!pReadData(0, 1, rxbuf, &len)) {
+		LOG_DEBUG("WCH adapter speed response read failed");
+		return ERROR_FAIL;
+	}
 	if (((rxbuf[0] == 0x82) && (rxbuf[1] == 0x0c) && (rxbuf[2] == 0x01) && (rxbuf[3] == 0x01)))
 		return ERROR_OK;
+	LOG_DEBUG("Unexpected WCH adapter speed response: %02x %02x %02x %02x",
+		rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3]);
 	return ERROR_FAIL;
 }
 
@@ -2554,7 +2632,7 @@ static int wlink_khz(int khz, int *speed)
 }
 
 
-int getchip(char * arc){
+int getchip(const char *arc){
 	
 if((strcmp(arc,"CH32V1x")==0)||(strcmp(arc,"CH32V10x")==0)){
 		riscvchip=0x01;
@@ -2707,13 +2785,17 @@ COMMAND_HANDLER(page_erase)
 COMMAND_HANDLER(code_erase)
 {
 	encodeerase =true;
-	if(CMD_ARGV[0])
-    	getchip(CMD_ARGV[0]);
-    else{
+	if(CMD_ARGC >= 1 && CMD_ARGV[0])
+		getchip(CMD_ARGV[0]);
+	else{
 		LOG_ERROR("The chip_id is empty");
+		LOG_ERROR("Usage: code_erase <chip>");
 		return ERROR_FAIL;
 
 	}
+
+	LOG_WARNING("WCH code_erase armed for %s", CMD_ARGV[0]);
+	LOG_WARNING("WCH code_erase will run during adapter init and may erase USER/code flash");
 
 	
 	return ERROR_OK;
@@ -2812,8 +2894,8 @@ static const struct command_registration wlink_command_handlers[] = {
 		.name = "code_erase",
 		.handler = &code_erase,
 		.mode = COMMAND_CONFIG,
-		.help = "",
-		.usage = "[count]",
+		.help = "arm WCH code flash mass erase during adapter init",
+		.usage = "<chip>",
 	},
 	{
 		.name = "chip_id",

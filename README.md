@@ -49,7 +49,7 @@ wch_riscv read_protect_status
 wch_riscv disable_read_protect confirm-user-flash-erase
 ```
 
-These commands require a successfully initialized WCH-Link target session. `protection_status` prints WCH read-protect/code-protect status and, for CH32V003 with read-protect disabled, raw FLASH registers plus option byte / WRP bytes. If read-protect is enabled, the command skips target-memory option/WRP reads because they can be misleading under protection.
+These commands require a successfully initialized WCH-Link target session. For CH32V003, read-protect status is derived from the RDP option byte when target memory is readable, because the WCH-Link protect-status response can be stateful after option-byte reads. If option-byte readback is not available, the command falls back to the WCH-Link status response. `protection_status` also prints raw FLASH registers plus option byte / WRP bytes when read-protect is disabled. If read-protect is enabled, the command skips target-memory option/WRP reads because they can be misleading under protection.
 
 `disable_read_protect` intentionally requires the literal confirmation token. Disabling read-protect/code-protect may erase or disturb USER flash, so capture USER/BOOT readback first and verify/rewrite USER flash afterward.
 

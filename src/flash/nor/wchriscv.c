@@ -156,7 +156,32 @@ static const char *ch32vx_read_protect_status_name(int status)
 	}
 }
 
-static int ch32vx_read_protect_status(void)
+static int ch32v003_option_byte_read_protect_status(struct target *target)
+{
+	if (!target)
+		return ERROR_FAIL;
+
+	uint8_t rdp[2];
+	int retval = target_read_buffer(target, CH32V003_OPTION_BYTES_BASE,
+		sizeof(rdp), rdp);
+	if (retval != ERROR_OK)
+		return retval;
+
+	if ((uint8_t)(rdp[0] ^ rdp[1]) != 0xff) {
+		LOG_WARNING("CH32V003 RDP option byte complement mismatch: RDP=0x%02x nRDP=0x%02x",
+			rdp[0], rdp[1]);
+	}
+
+	int status = (rdp[0] == 0xa5 && rdp[1] == 0x5a)
+		? CH32VX_READ_PROTECT_DISABLED
+		: CH32VX_READ_PROTECT_ENABLED;
+
+	LOG_INFO("CH32V003 RDP option byte status: RDP=0x%02x nRDP=0x%02x status=%s",
+		rdp[0], rdp[1], ch32vx_read_protect_status_name(status));
+	return status;
+}
+
+static int ch32vx_read_protect_status(struct target *target)
 {
 	if (!wlink_is_open()) {
 		LOG_ERROR("WCH read-protect/code-protect status requires initialized WCH-Link; run init first");
@@ -172,6 +197,15 @@ static int ch32vx_read_protect_status(void)
 		LOG_ERROR("Read-protect status command is not supported for chip=0x%02x detected=0x%02x",
 			riscvchip, wlink_detected_chip);
 		return ERROR_FAIL;
+	}
+
+	if (ch32vx_is_ch32v003()) {
+		int option_status = ch32v003_option_byte_read_protect_status(target);
+		if (option_status == CH32VX_READ_PROTECT_ENABLED
+				|| option_status == CH32VX_READ_PROTECT_DISABLED)
+			return option_status;
+
+		LOG_WARNING("CH32V003 RDP option byte read failed; falling back to WCH-Link protect status");
 	}
 
 	int status = wlnik_protect_check();
@@ -700,7 +734,7 @@ COMMAND_HANDLER(ch32vx_handle_read_protect_status_command)
 	if (CMD_ARGC != 0)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	int status = ch32vx_read_protect_status();
+	int status = ch32vx_read_protect_status(get_current_target(CMD_CTX));
 	if (status < 0)
 		return status;
 
@@ -717,7 +751,8 @@ COMMAND_HANDLER(ch32vx_handle_protection_status_command)
 	if (CMD_ARGC != 0)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
-	int status = ch32vx_read_protect_status();
+	struct target *target = get_current_target(CMD_CTX);
+	int status = ch32vx_read_protect_status(target);
 	if (status < 0)
 		return status;
 
@@ -739,7 +774,6 @@ COMMAND_HANDLER(ch32vx_handle_protection_status_command)
 		return ERROR_OK;
 	}
 
-	struct target *target = get_current_target(CMD_CTX);
 	if (!target) {
 		LOG_ERROR("No current target; cannot read CH32V003 option/WRP status");
 		return ERROR_FAIL;
@@ -769,7 +803,7 @@ COMMAND_HANDLER(ch32vx_handle_disable_read_protect_command)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 	}
 
-	int status = ch32vx_read_protect_status();
+	int status = ch32vx_read_protect_status(get_current_target(CMD_CTX));
 	if (status < 0) {
 		command_print(CMD, "Failed to read current read-protect/code-protect status.");
 		command_print(CMD, "Run init first and retry before changing protection.");
@@ -794,7 +828,7 @@ COMMAND_HANDLER(ch32vx_handle_disable_read_protect_command)
 		return retval;
 	}
 
-	status = ch32vx_read_protect_status();
+	status = ch32vx_read_protect_status(get_current_target(CMD_CTX));
 	if (status < 0) {
 		command_print(CMD, "WCH read-protect/code-protect disable request was accepted.");
 		command_print(CMD, "WARNING: final status read failed; reconnect and verify USER/BOOT flash.");

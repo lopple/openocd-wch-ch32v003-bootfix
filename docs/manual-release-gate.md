@@ -100,6 +100,29 @@ On failure:
 - If flash protection settings were changed, record the exact operation in the gate log.
 - If WCH-LinkUtility was used for recovery, record the recovery procedure and readback/hash results.
 
+## Protection Command Gate Notes
+
+The CH32V003 protection commands are diagnostic and recovery aids. They are not
+a substitute for BOOT write/readback validation.
+
+Required handling:
+
+1. Run `init` before `wch_riscv read_protect_status`,
+   `wch_riscv protection_status`, or
+   `wch_riscv disable_read_protect confirm-user-flash-erase`.
+2. Do not run `disable_read_protect` unless the test plan explicitly accepts
+   that USER flash may be erased or disturbed.
+3. If `disable_read_protect` is run, record the USER/BOOT readback or hashes
+   before and after the operation.
+4. After disabling read-protect/code-protect, rewrite and verify USER flash
+   from a known image before using the target for a BOOT write release gate.
+5. Treat `flash protect` as a WCH read-protect/code-protect operation, not as
+   per-sector write-protect.
+
+The legacy `code_erase CH32V003` adapter command has no address/range
+parameter. Use it only for explicitly approved recovery tests that accept
+USER/code flash erase risk, and record the recovery evidence.
+
 ## Gate C: Draft Release Asset Check
 
 After tag push, the `Windows release draft` workflow creates a draft prerelease and uploads the release asset.

@@ -38,6 +38,35 @@ bin\openocd.exe -s share\openocd\scripts -f target\wch-riscv-ch32v003.cfg
 
 For CH32V003 BOOT writes, read back USER flash and BOOT/system storage before and after the write. Confirm that BOOT readback matches the requested image and that the USER flash hash is unchanged.
 
+## CH32V003 Protection Commands
+
+Use these commands only when the target protection state is part of the test plan. Do not treat read-protect/code-protect as per-sector write-protect.
+
+```text
+init
+wch_riscv protection_status
+wch_riscv read_protect_status
+wch_riscv disable_read_protect confirm-user-flash-erase
+```
+
+These commands require a successfully initialized WCH-Link target session. `protection_status` prints WCH read-protect/code-protect status and, for CH32V003 with read-protect disabled, raw FLASH registers plus option byte / WRP bytes. If read-protect is enabled, the command skips target-memory option/WRP reads because they can be misleading under protection.
+
+`disable_read_protect` intentionally requires the literal confirmation token. Disabling read-protect/code-protect may erase or disturb USER flash, so capture USER/BOOT readback first and verify/rewrite USER flash afterward.
+
+## WCH Code Erase Recovery Command
+
+The legacy WCH adapter command syntax is preserved:
+
+```text
+code_erase CH32V003
+init
+shutdown
+```
+
+This is a target code flash mass-erase recovery path, not a BOOT/system flash writer. It has no address/range parameter. Use it only when the test plan explicitly accepts USER/code flash erase risk, and verify or rewrite USER flash afterward. This fork keeps the existing command shape and only strengthens risk logging plus low-level response handling.
+
+The WCH-LinkUtility, WCHLinkDLL, and WCH-Link firmware protocol details are not treated as a public, stable specification in this project. `code_erase` is a legacy WCH adapter command preserved from the imported WCH source. This release does not claim it as a validated replacement for WCH-LinkUtility `Clear All Code Flash-By Pin NRST`; raw WCH-Link responses are logged for diagnosis and future comparison.
+
 ## Packaging and Release Policy
 
 - [docs/changes-from-upstream.md](docs/changes-from-upstream.md)

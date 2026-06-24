@@ -26,6 +26,12 @@ Configurations that replace the driver with Zadig, WinUSB, or libusbK are unsupp
 
 Successful BOOT writes require matching BOOT readback and unchanged USER flash hash, not OpenOCD verify alone.
 
+## WCH Internal Protocol Boundary
+
+WCH-LinkUtility, WCHLinkDLL, and WCH-Link firmware protocol details are not treated as a public, stable specification for this release. WCH-specific legacy adapter commands such as `code_erase CH32V003` may remain available for compatibility, but they are not release-validated recovery features unless a report explicitly records destructive hardware validation and WCH-LinkUtility comparison.
+
+For this release, `code_erase` is documented as a preserved WCH legacy command with improved raw ACK/risk logging only. Do not present it as an OpenOCD replacement for WCH-LinkUtility `Clear All Code Flash-By Pin NRST`.
+
 ## Required Build Artifact Process
 
 Only zips that satisfy every step below may be considered Windows release artifacts.

@@ -23,12 +23,19 @@ git diff upstream/cjacker-2024-11-26..main
   - validates CH32V003 write ranges before WCH-Link transfer
   - rejects addressless erase through the unsafe legacy erase path for CH32V003
   - logs bank, target address, and resolved WCH-Link address for writes
+  - adds `read_protect_status`, `protection_status`, and
+    `disable_read_protect confirm-user-flash-erase` commands
+  - requires an initialized WCH-Link target session before reading or changing
+    protection state
+  - logs USER flash erase risk before disabling read-protect/code-protect
 - `src/jtag/drivers/wlinke.c`
   - keeps BOOT writes at `0x1ffff000`
   - limits CH32V003 BOOT write padding to the writable `0x1ffff000..0x1ffff77f`
     range
   - adds final write-plan logging and a write-plan trap before flash transfer
   - keeps the Windows WCHLinkDLL backend behind `--enable-wlinke-ch375-dll`
+  - preserves the legacy `code_erase CH32V003` command shape while adding
+    risk logging and raw response diagnostics
 - `tcl/target/wch-riscv-ch32v003.cfg`
   - defines explicit CH32V003 USER and BOOT flash banks
 - `src/helper/startup.tcl`
